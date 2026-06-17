@@ -1,0 +1,5 @@
+telethon>=1.36.0
+groq>=0.11.0
+python-dotenv>=1.0.0
+APScheduler>=3.10.4
+playwright>=1.44.0
