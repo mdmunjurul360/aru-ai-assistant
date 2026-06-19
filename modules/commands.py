@@ -5,9 +5,13 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from modules.memory import MemoryStore, CATEGORIES
 from modules.scheduler import AruScheduler
+
+if TYPE_CHECKING:
+    from modules.anti_spam import AntiSpamManager
 
 logger = logging.getLogger("aru.commands")
 
@@ -121,6 +125,7 @@ def handle_help_command(text: str) -> str | None:
         "**Scheduler:**\n"
         "`/remind YYYY-MM-DD HH:MM message`\n"
         "সকাল/রাতের অটো রিপোর্ট `.env` থেকে সেট করা।\n\n"
+        "**Cooldown:** `/cooldown`\n\n"
         "**Status:** `/status`"
     )
 
@@ -146,6 +151,28 @@ def handle_status_command(
         f"Pending tasks: {pending_tasks}\n"
         f"Activity logs: {activity_count}\n"
         f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    )
+
+
+def handle_cooldown_command(text: str, anti_spam: "AntiSpamManager", user_id: int) -> str | None:
+    """Show cooldown status for the requesting user."""
+    if text.strip().lower() != "/cooldown":
+        return None
+
+    info = anti_spam.get_cooldown_info(user_id)
+    if not info:
+        return "❌ আপনার কোনো কুলডাউন সক্রিয় নেই।"
+
+    hours_left = anti_spam._hours_until_next_reply(user_id)
+    if hours_left <= 0:
+        return "✅ কুলডাউন শেষ হয়েছে। আপনি এখন আবার মেসেজ করতে পারেন।"
+
+    return (
+        f"⏳ **আপনার Cooldown Status**\n\n"
+        f"User ID: `{user_id}`\n"
+        f"Last Reply: {info.last_reply_at}\n"
+        f"Messages During Cooldown: {info.message_count}/100\n"
+        f"Time Remaining: {hours_left} ঘণ্টা"
     )
 
 
