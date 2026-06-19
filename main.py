@@ -29,9 +29,11 @@ from telethon.errors import (
 
 from modules.activity_log import ActivityLogger
 from modules.ai import AruAI
+from modules.anti_spam import AntiSpamManager
 from modules.auth import unauthorized_message, verify_sender, verify_secret_code
 from modules.browser import BrowserAutomation
 from modules.commands import (
+    handle_cooldown_command,
     handle_help_command,
     handle_memory_command,
     handle_reminder_command,
@@ -96,6 +98,7 @@ class AruBot:
         )
         self.ai = AruAI()
         self.memory = MemoryStore(activity=self.activity)
+        self.anti_spam = AntiSpamManager(activity=self.activity)
         self.tasks = TaskManager(activity=self.activity)
         self.research = ResearchAgent(self.ai, activity=self.activity)
         self.voice = VoiceAssistant(self.ai, activity=self.activity)
@@ -200,6 +203,7 @@ class AruBot:
                     "/task",
                     "/status",
                     "/unlock",
+                    "/cooldown",
                     "/memory",
                     "/remind",
                 )
@@ -230,14 +234,25 @@ class AruBot:
             )
 
             if not authorized:
-                await event.reply(unauthorized_message())
-                logger.info(
-                    "Unauthorized reply sent | sender=%s chat=%s is_boss=%s reply_generated=%s",
-                    sender_id,
-                    event.chat_id,
-                    False,
-                    True,
-                )
+                should_reply, reason = self.anti_spam.should_reply(sender_id, is_boss=False)
+                if should_reply:
+                    await event.reply(unauthorized_message())
+                    self.anti_spam.record_reply(sender_id, is_boss=False)
+                    logger.info(
+                        "Unauthorized reply sent | sender=%s chat=%s reason=%s",
+                        sender_id,
+                        event.chat_id,
+                        reason,
+                    )
+                else:
+                    self.anti_spam.record_ignored_message(sender_id)
+                    logger.info(
+                        "Unauthorized message ignored | sender=%s chat=%s reason=%s message_count=%s",
+                        sender_id,
+                        event.chat_id,
+                        reason,
+                        self.anti_spam.get_cooldown_info(sender_id).message_count if self.anti_spam.get_cooldown_info(sender_id) else 0,
+                    )
                 return
 
             if is_mention and event.is_private:
@@ -247,7 +262,7 @@ class AruBot:
                 await self._handle_voice_message(event, event.chat_id)
                 return
 
-            response = await self._process_boss_message(event, text, event.chat_id)
+            response = await self._process_boss_message(event, text, event.chat_id, sender_id)
             if response:
                 await event.reply(response)
                 logger.info(
@@ -318,6 +333,7 @@ class AruBot:
         event: events.NewMessage.Event,
         text: str,
         chat_id: int,
+        sender_id: int,
     ) -> str | None:
         """Route commands or forward to AI."""
         lower = text.lower()
@@ -335,6 +351,7 @@ class AruBot:
             return research_result
 
         for result in (
+            handle_cooldown_command(text, self.anti_spam, sender_id),
             handle_help_command(text),
             self.tasks.handle_command(text),
             self.memory.handle_v2_command(text),
