@@ -1,6 +1,20 @@
-# Aru — Personal Telegram AI UserBot
+# Aru AI Assistant
 
-**Aru** is a production-ready Python Telegram UserBot that acts as your personal AI assistant: task manager, memory system, scheduler, and future automation hub.
+> 🚧 **Project Status:** Active Development
+
+Aru is a modular Telegram-based AI assistant built with Python, Telethon, and Groq. It is designed to automate tasks, manage long-term memory, schedule reminders, and serve as a personal AI productivity companion. The project is actively under development, with new AI capabilities and integrations being added over time.
+
+## Features
+
+- AI-powered conversations using Groq LLM
+- Telegram UserBot automation
+- Long-term memory with SQLite
+- Task management system
+- Smart reminders and scheduling
+- Boss-only authentication
+- Modular architecture
+- Extensible AI modules
+- Future browser automation support
 
 ## Tech Stack
 
@@ -38,6 +52,8 @@ aru-ai/
 ```
 
 ## Installation
+git clone https://github.com/mdmunjurul360/aru-ai-assistant.git
+cd aru-ai-assistant
 
 ### 1. Prerequisites
 
@@ -176,6 +192,35 @@ Configured in `.env`:
 | `browser.py` | Playwright placeholder |
 | `future.py` | Stubs: voice, WhatsApp, Gmail, GitHub, research |
 
+## Roadmap
+
+- [x] Telegram UserBot
+- [x] Groq AI Integration
+- [x] Long-term Memory
+- [x] Task Management
+- [x] Reminder Scheduler
+- [ ] Browser Automation
+- [ ] GitHub Integration
+- [ ] Gmail Integration
+- [ ] WhatsApp Integration
+- [ ] Voice Commands
+- [ ] Local LLM Support
+
+
+## Future Integrations
+
+Planned capabilities include:
+
+- GitHub Assistant
+- Gmail Integration
+- Google Calendar
+- WhatsApp Support
+- Voice Interaction
+- Browser Automation
+- Web Research Agent
+- Multi-agent Collaboration
+
+
 ## Troubleshooting
 
 - **Missing .env** — Run will exit with a list of missing variables.
@@ -189,4 +234,10 @@ UserBots use your personal Telegram account. Follow [Telegram ToS](https://teleg
 
 ## License
 
-Private personal use — customize as needed.
+This project is licensed under the MIT License.
+
+See the LICENSE file for more information.
+
+## Contributing
+
+This project is currently under active development. Suggestions, bug reports, and pull requests are always welcome.
