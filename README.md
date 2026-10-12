@@ -6,15 +6,15 @@ Aru is a modular Telegram-based AI assistant built with Python, Telethon, and Gr
 
 ## Features
 
-- AI-powered conversations using Groq LLM
+- Multi-provider AI integration (Groq, Gemini, OpenRouter, Cloudflare AI)
 - Telegram UserBot automation
-- Long-term memory with SQLite
-- Task management system
+- Long-term memory powered by SQLite
+- Task management and productivity tools
 - Smart reminders and scheduling
-- Boss-only authentication
-- Modular architecture
-- Extensible AI modules
-- Future browser automation support
+- Boss-only authentication and access control
+- Modular plugin-based architecture
+- Extensible AI provider abstraction
+- Ready for future browser automation and external integrations
 
 ## Tech Stack
 
