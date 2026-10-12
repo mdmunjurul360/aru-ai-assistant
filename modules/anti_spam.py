@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Iterator
 
 from modules.config import DATABASE_DIR, DATABASE_PATH
+from modules.db import get_db_connection
 
 if TYPE_CHECKING:
     from modules.activity_log import ActivityLogger
@@ -42,16 +43,8 @@ class AntiSpamManager:
 
     @contextmanager
     def _conn(self) -> Iterator[sqlite3.Connection]:
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        try:
+        with get_db_connection(self.db_path) as conn:
             yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
 
     def _init_db(self) -> None:
         with self._conn() as conn:

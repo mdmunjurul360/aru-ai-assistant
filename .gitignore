@@ -1,11 +1,55 @@
+# Environment and Secrets
 .env
+.env.*
+!.env.example
+
+# Telegram session files
 *.session
 *.session-journal
+sessions/
+
+# SQLite Databases & Backups
 database/*.db
-logs/*.log
+database/*.db-wal
+database/*.db-shm
+*.sqlite
+*.sqlite3
+backups/
+database/backups/
+*.tar.gz
+*.bak
+
+# Logs
+logs/
+*.log
+
+# Python cache & compiled files
 __pycache__/
 *.py[cod]
+*$py.class
+*.pyd
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Virtual Environments
 .venv/
 venv/
+env/
+ENV/
+
+# IDE & OS
 .idea/
 .vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Temporary & Scratch files
+temp/
+tmp/
+*.tmp

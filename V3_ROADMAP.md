@@ -1,4 +1,27 @@
-# Aru AI V3 - Implementation Roadmap
+# Aru AI - Engineering Roadmap
+
+## ✅ Sprint 1: Foundation Stabilization (COMPLETED)
+
+### What Was Stabilized
+1. **Groq Model Modernization:**
+   - Switched from deprecated `llama3-70b-8192` to supported models (`qwen/qwen3.8-27b` / `llama-3.3-70b-versatile`).
+   - Prioritized validated active model in `_models_to_try` to eliminate retry penalties on every request.
+2. **Centralized SQLite Architecture:**
+   - Created `modules/db.py` connection manager.
+   - Enabled `PRAGMA journal_mode=WAL` across all database operations.
+   - Configured `PRAGMA busy_timeout=5000` to prevent database locking under concurrency.
+   - Refactored `memory.py`, `tasks.py`, `anti_spam.py`, and `activity_log.py` to share the centralized connection engine without changing module APIs.
+   - Added performance indexes to `tasks` table (`idx_tasks_status`, `idx_tasks_created`).
+3. **Async Network Safety:**
+   - Replaced blocking synchronous HTTP calls in `modules/research.py` with async `httpx.AsyncClient`.
+4. **Automated Testing Suite:**
+   - Implemented 35 automated pytest tests covering Auth, Memory, Tasks, Anti-Spam, DB, Commands, and AI config.
+5. **Dependency & Startup Cleanup:**
+   - Added `httpx`, `pytest`, `pytest-asyncio` to `requirements.txt`.
+   - Upgraded `scripts/startup_check.py` with dependency diagnostics and WAL verification.
+   - Fixed shadowed symbol bug in `modules/future.py`.
+
+---
 
 ## ✅ Phase 1: Anti-Spam System (COMPLETED)
 

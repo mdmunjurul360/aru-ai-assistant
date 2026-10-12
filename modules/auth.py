@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from modules.config import BOSS_TELEGRAM_ID, SECRET_CODE, UNAUTHORIZED_REPLY
+from modules import config
 
 logger = logging.getLogger("aru.auth")
 
@@ -20,9 +20,9 @@ def get_sender_id(sender) -> int | None:
 
 def is_boss(sender_id: int | None) -> bool:
     """Return True if sender is the configured Boss."""
-    if sender_id is None or not BOSS_TELEGRAM_ID:
+    if sender_id is None or not config.BOSS_TELEGRAM_ID:
         return False
-    return int(sender_id) == int(BOSS_TELEGRAM_ID)
+    return int(sender_id) == int(config.BOSS_TELEGRAM_ID)
 
 
 def verify_sender(sender) -> tuple[bool, int | None]:
@@ -34,7 +34,7 @@ def verify_sender(sender) -> tuple[bool, int | None]:
     logger.debug(
         "Verifying sender_id=%s against BOSS_TELEGRAM_ID=%s",
         sender_id,
-        BOSS_TELEGRAM_ID,
+        config.BOSS_TELEGRAM_ID,
     )
     authorized = is_boss(sender_id)
     if authorized:
@@ -45,11 +45,11 @@ def verify_sender(sender) -> tuple[bool, int | None]:
 
 
 def unauthorized_message() -> str:
-    return UNAUTHORIZED_REPLY
+    return config.UNAUTHORIZED_REPLY
 
 
 def verify_secret_code(code: str) -> bool:
     """Optional secret code check (e.g. /unlock)."""
-    if not SECRET_CODE:
+    if not config.SECRET_CODE:
         return False
-    return code.strip() == SECRET_CODE.strip()
+    return code.strip() == config.SECRET_CODE.strip()

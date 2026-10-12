@@ -36,7 +36,7 @@ class VoiceAssistant:
     def connect(self) -> bool:
         reload_settings()
         if not GROQ_API_KEY:
-            logger.error("GROQ_API_KEY missing — voice transcription unavailable")
+            logger.info("GROQ_API_KEY not configured — voice transcription unavailable")
             return False
         try:
             self._client = Groq(api_key=GROQ_API_KEY)

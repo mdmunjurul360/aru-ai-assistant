@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  aru-ai:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: aru-personal-ai-os
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./database:/app/database
+      - ./logs:/app/logs
+      - ./sessions:/app/sessions
+      - ./plugins:/app/plugins
+      - ./knowledge:/app/knowledge
+    environment:
+      - PYTHONUNBUFFERED=1
+      - SCHEDULER_TIMEZONE=Asia/Dhaka
+    healthcheck:
+      test: ["CMD", "python", "scripts/healthcheck.py"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"

@@ -4,19 +4,22 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import TYPE_CHECKING, Callable, Awaitable
+from typing import TYPE_CHECKING, Callable, Awaitable, Any
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
 
 from modules.config import (
+    MAINTENANCE_HOUR,
+    MAINTENANCE_MINUTE,
     MORNING_REPORT_HOUR,
     MORNING_REPORT_MINUTE,
     NIGHT_SUMMARY_HOUR,
     NIGHT_SUMMARY_MINUTE,
     SCHEDULER_TIMEZONE,
 )
+from modules.maintenance import DatabaseMaintenance
 
 if TYPE_CHECKING:
     from modules.tasks import TaskManager
@@ -35,10 +38,12 @@ class AruScheduler:
         send_to_boss: SendMessageFn,
         task_manager: "TaskManager",
         memory_store: "MemoryStore",
+        maintenance: "DatabaseMaintenance | None" = None,
     ) -> None:
         self._send = send_to_boss
         self._tasks = task_manager
         self._memory = memory_store
+        self._maintenance = maintenance or DatabaseMaintenance()
         self._scheduler = AsyncIOScheduler(timezone=SCHEDULER_TIMEZONE)
 
     def start(self) -> None:
@@ -62,14 +67,26 @@ class AruScheduler:
             id="night_summary",
             replace_existing=True,
         )
+        self._scheduler.add_job(
+            self._nightly_maintenance,
+            CronTrigger(
+                hour=MAINTENANCE_HOUR,
+                minute=MAINTENANCE_MINUTE,
+                timezone=SCHEDULER_TIMEZONE,
+            ),
+            id="database_maintenance",
+            replace_existing=True,
+        )
         self._scheduler.start()
         logger.info(
-            "Scheduler started (tz=%s, morning=%02d:%02d, night=%02d:%02d)",
+            "Scheduler started (tz=%s, morning=%02d:%02d, night=%02d:%02d, maintenance=%02d:%02d)",
             SCHEDULER_TIMEZONE,
             MORNING_REPORT_HOUR,
             MORNING_REPORT_MINUTE,
             NIGHT_SUMMARY_HOUR,
             NIGHT_SUMMARY_MINUTE,
+            MAINTENANCE_HOUR,
+            MAINTENANCE_MINUTE,
         )
 
     def shutdown(self) -> None:
@@ -118,6 +135,17 @@ class AruScheduler:
             logger.info("Night summary sent")
         except Exception as exc:
             logger.exception("Night summary failed: %s", exc)
+
+    async def _nightly_maintenance(self) -> None:
+        try:
+            summary = self._maintenance.run_full_maintenance()
+            logger.info("Scheduled database maintenance completed: %s", summary)
+        except Exception as exc:
+            logger.exception("Scheduled database maintenance failed: %s", exc)
+
+    def run_maintenance_now(self) -> dict[str, Any]:
+        """Trigger on-demand database maintenance."""
+        return self._maintenance.run_full_maintenance()
 
     def schedule_reminder(
         self,
