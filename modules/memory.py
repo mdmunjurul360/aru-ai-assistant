@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -10,6 +11,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Iterator
 
 from modules.config import DATABASE_DIR, DATABASE_PATH
+from modules.db import get_db_connection
 
 if TYPE_CHECKING:
     from modules.activity_log import ActivityLogger
@@ -31,7 +33,7 @@ class MemoryItem:
 
 
 class MemoryStore:
-    """CRUD operations for Boss memories."""
+    """CRUD operations for Boss memories with FTS5 full-text search."""
 
     def __init__(
         self,
@@ -45,16 +47,8 @@ class MemoryStore:
 
     @contextmanager
     def _conn(self) -> Iterator[sqlite3.Connection]:
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        try:
+        with get_db_connection(self.db_path) as conn:
             yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
 
     def _init_db(self) -> None:
         with self._conn() as conn:
@@ -77,7 +71,56 @@ class MemoryStore:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_memories_title ON memories(title)"
             )
-        logger.info("Memory database ready at %s", self.db_path)
+            # SQLite FTS5 virtual table for full-text search
+            conn.execute(
+                """
+                CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+                    title,
+                    content,
+                    tags,
+                    category,
+                    content='memories',
+                    content_rowid='id'
+                )
+                """
+            )
+            # Automatic synchronization triggers
+            conn.execute(
+                """
+                CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
+                    INSERT INTO memories_fts(rowid, title, content, tags, category)
+                    VALUES (new.id, new.title, new.content, new.tags, new.category);
+                END
+                """
+            )
+            conn.execute(
+                """
+                CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
+                    INSERT INTO memories_fts(memories_fts, rowid, title, content, tags, category)
+                    VALUES('delete', old.id, old.title, old.content, old.tags, old.category);
+                END
+                """
+            )
+            conn.execute(
+                """
+                CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
+                    INSERT INTO memories_fts(memories_fts, rowid, title, content, tags, category)
+                    VALUES('delete', old.id, old.title, old.content, old.tags, old.category);
+                    INSERT INTO memories_fts(rowid, title, content, tags, category)
+                    VALUES (new.id, new.title, new.content, new.tags, new.category);
+                END
+                """
+            )
+            # Ensure index sync if rows existed before FTS5 table creation
+            try:
+                fts_count = conn.execute("SELECT COUNT(*) FROM memories_fts").fetchone()[0]
+                mem_count = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+                if fts_count != mem_count:
+                    conn.execute("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')")
+            except Exception as exc:
+                logger.debug("FTS5 sync check notice: %s", exc)
+
+        logger.info("Memory database ready with FTS5 at %s", self.db_path)
 
     @staticmethod
     def _now() -> str:
@@ -120,26 +163,118 @@ class MemoryStore:
             self._activity.log("memory", "save", f"id={mem_id} title={title[:60]}")
         return self._row_to_item(row)
 
-    def search(self, query: str, *, limit: int = 10) -> list[MemoryItem]:
-        q = f"%{query.strip()}%"
+    # --- Logical Memory Types ---
+    def save_fact(self, title: str, content: str, *, tags: str = "") -> MemoryItem:
+        return self.save(title, content, category="fact", tags=tags)
+
+    def save_preference(self, title: str, content: str, *, tags: str = "") -> MemoryItem:
+        return self.save(title, content, category="preference", tags=tags)
+
+    def save_goal(self, title: str, content: str, *, tags: str = "") -> MemoryItem:
+        return self.save(title, content, category="goal", tags=tags)
+
+    def save_project(self, title: str, content: str, *, tags: str = "") -> MemoryItem:
+        return self.save(title, content, category="project", tags=tags)
+
+    def get_facts(self, *, limit: int = 20) -> list[MemoryItem]:
+        return self.list_all(category="fact", limit=limit)
+
+    def get_preferences(self, *, limit: int = 20) -> list[MemoryItem]:
+        return self.list_all(category="preference", limit=limit)
+
+    def get_goals(self, *, limit: int = 20) -> list[MemoryItem]:
+        return self.list_all(category="goal", limit=limit)
+
+    def get_projects(self, *, limit: int = 20) -> list[MemoryItem]:
+        return self.list_all(category="project", limit=limit)
+
+    def _sanitize_fts_query(self, query: str) -> str:
+        """Prepare search query for SQLite FTS5 prefix matching."""
+        raw_tokens = query.strip().split()
+        sanitized = []
+        for t in raw_tokens:
+            cleaned = re.sub(r"[^\w]", "", t)
+            if cleaned:
+                sanitized.append(f'"{cleaned}"*')
+        return " ".join(sanitized)
+
+    def search(
+        self,
+        query: str,
+        *,
+        limit: int = 10,
+        category: str | None = None,
+    ) -> list[MemoryItem]:
+        """Search memories using SQLite FTS5 with BM25 ranking, falling back to LIKE."""
+        stripped = query.strip()
+        if not stripped:
+            return []
+
         if self._activity:
-            self._activity.log("memory", "search", query[:100])
+            self._activity.log("memory", "search", stripped[:100])
+
+        fts_pattern = self._sanitize_fts_query(stripped)
+        if fts_pattern:
+            try:
+                with self._conn() as conn:
+                    if category:
+                        rows = conn.execute(
+                            """
+                            SELECT m.* FROM memories m
+                            JOIN memories_fts f ON m.id = f.rowid
+                            WHERE memories_fts MATCH ? AND m.category = ?
+                            ORDER BY f.rank
+                            LIMIT ?
+                            """,
+                            (fts_pattern, category.lower(), limit),
+                        ).fetchall()
+                    else:
+                        rows = conn.execute(
+                            """
+                            SELECT m.* FROM memories m
+                            JOIN memories_fts f ON m.id = f.rowid
+                            WHERE memories_fts MATCH ?
+                            ORDER BY f.rank
+                            LIMIT ?
+                            """,
+                            (fts_pattern, limit),
+                        ).fetchall()
+                if rows:
+                    return [self._row_to_item(r) for r in rows]
+            except Exception as exc:
+                logger.debug("FTS5 match fallback for '%s': %s", stripped, exc)
+
+        # Fallback to standard LIKE matching if FTS yields nothing or syntax fails
+        q = f"%{stripped}%"
         with self._conn() as conn:
-            rows = conn.execute(
-                """
-                SELECT * FROM memories
-                WHERE title LIKE ? OR content LIKE ? OR tags LIKE ? OR category LIKE ?
-                ORDER BY updated_at DESC
-                LIMIT ?
-                """,
-                (q, q, q, q, limit),
-            ).fetchall()
+            if category:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM memories
+                    WHERE (title LIKE ? OR content LIKE ? OR tags LIKE ?) AND category = ?
+                    ORDER BY updated_at DESC
+                    LIMIT ?
+                    """,
+                    (q, q, q, category.lower(), limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM memories
+                    WHERE title LIKE ? OR content LIKE ? OR tags LIKE ? OR category LIKE ?
+                    ORDER BY updated_at DESC
+                    LIMIT ?
+                    """,
+                    (q, q, q, q, limit),
+                ).fetchall()
         return [self._row_to_item(r) for r in rows]
 
     def get_by_id(self, mem_id: int) -> MemoryItem | None:
         with self._conn() as conn:
             row = conn.execute("SELECT * FROM memories WHERE id = ?", (mem_id,)).fetchone()
         return self._row_to_item(row) if row else None
+
+    get = get_by_id
 
     def list_all(self, *, category: str | None = None, limit: int = 20) -> list[MemoryItem]:
         with self._conn() as conn:

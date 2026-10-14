@@ -1,0 +1,16 @@
+"""Fixtures and setup for V4 tests."""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+import pytest
+
+# Ensure src/ and repo root are on sys.path
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+SRC_DIR = REPO_ROOT / "src"
+
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))

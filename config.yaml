@@ -1,0 +1,11 @@
+# Configuration for Aru AI Personal OS
+llm:
+  priority:
+    - openrouter
+    - groq
+    - gemini
+    - cloudflare
+    - deepseek
+  timeout: 30
+  retry: 2
+  cooldown_seconds: 300

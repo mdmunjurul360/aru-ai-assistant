@@ -1,0 +1,59 @@
+# Production Configuration for Aru AI Personal OS
+app:
+  name: "Aru AI Personal OS"
+  version: "4.0.0-sprint7"
+  environment: "production"
+  debug: false
+
+models:
+  primary_chat: "qwen/qwen3.8-27b"
+  fallback_chat: "llama-3.3-70b-versatile"
+  vision: "llama-3.2-11b-vision-preview"
+  whisper_stt: "whisper-large-v3"
+
+llm:
+  priority:
+    - openrouter
+    - groq
+    - gemini
+    - cloudflare
+    - deepseek
+  timeout: 30
+  retry: 2
+  cooldown_seconds: 300
+
+database:
+  engine: "sqlite3"
+  journal_mode: "WAL"
+  synchronous: "NORMAL"
+  busy_timeout_ms: 15000
+  maintenance:
+    cron_hour: 3
+    cron_minute: 0
+    wal_checkpoint_mode: "TRUNCATE"
+    retention_days_activity_logs: 30
+    retention_days_cooldowns: 3
+
+semantic_memory:
+  dimension: 128
+  hybrid_rrf_k: 60
+  bm25_weight: 0.5
+  vector_weight: 0.5
+  max_context_budget_tokens: 1200
+
+knowledge_base:
+  chunk_size_chars: 500
+  chunk_overlap_chars: 80
+  allowed_extensions: [".txt", ".md", ".docx", ".pdf"]
+
+security:
+  anti_spam:
+    cooldown_hours: 3
+    max_spam_attempts: 100
+  sandbox:
+    enforce_strict_permissions: true
+
+observability:
+  log_level: "INFO"
+  metrics_persistence: true
+  cost_alert_threshold_usd: 10.0

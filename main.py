@@ -14,6 +14,7 @@ import asyncio
 import sys
 from collections import defaultdict
 from pathlib import Path
+from typing import Any
 
 # Ensure project root is on path
 ROOT = Path(__file__).resolve().parent
@@ -28,19 +29,26 @@ from telethon.errors import (
 )
 
 from modules.activity_log import ActivityLogger
+from modules.agent import AruAgent
 from modules.ai import AruAI
 from modules.anti_spam import AntiSpamManager
 from modules.auth import unauthorized_message, verify_sender, verify_secret_code
 from modules.browser import BrowserAutomation
 from modules.commands import (
+    handle_agent_command,
     handle_cooldown_command,
     handle_help_command,
     handle_memory_command,
+    handle_plan_command,
     handle_reminder_command,
     handle_status_command,
+    handle_tools_command,
+    handle_workflow_command,
 )
 from modules.config import (
+    AGENT_MAX_ITERATIONS,
     BOSS_TELEGRAM_ID,
+    CONVERSATION_HISTORY_LIMIT,
     DATABASE_DIR,
     ENV_PATH,
     LOGS_DIR,
@@ -53,30 +61,94 @@ from modules.config import (
     reload_settings,
     validate_config,
 )
+from modules.conversation import ConversationHistoryStore
+from modules.db import ensure_db_ready
 from modules.logging_setup import setup_logging
 from modules.memory import MemoryStore
+from modules.memory_service import MemoryService
+from modules.multi_agent import MultiAgentManager
 from modules.research import ResearchAgent
 from modules.scheduler import AruScheduler
 from modules.tasks import TaskManager
+from modules.tools import (
+    BrowserTool,
+    ExecutionContext,
+    FileReaderTool,
+    MemoryTool,
+    ResearchTool,
+    TaskTool,
+    ToolManager,
+)
+from modules.pdf_processor import PDFProcessor
+from modules.vision.image_handler import is_image_message, process_image_message
 from modules.voice import VoiceAssistant
 
 logger = setup_logging()
 
-BANNER = """
-=====================
-ARU AI v2 ONLINE
-Telegram Connected
-Groq Connected
-Memory System Active
-Voice Assistant Ready
-Research Agent Ready
-Boss Verification Active
-=====================
-"""
 
-# Per-chat conversation history for AI context
-_chat_history: dict[int, list[dict[str, str]]] = defaultdict(list)
-MAX_HISTORY = 20
+def is_pdf_message(message: Any) -> bool:
+    """Detect if Telegram message carries a PDF document."""
+    if not message:
+        return False
+    f = getattr(message, "file", None)
+    if f and getattr(f, "ext", None) and (f.ext or "").lower() == ".pdf":
+        return True
+    doc = getattr(message, "document", None)
+    if doc:
+        mime = (getattr(doc, "mime_type", "") or "").lower()
+        if mime == "application/pdf":
+            return True
+        for attr in getattr(doc, "attributes", []):
+            fn = (getattr(attr, "file_name", "") or "").lower()
+            if fn.endswith(".pdf"):
+                return True
+    return False
+
+def build_startup_banner(
+    *,
+    telegram_connected: bool = True,
+    connected_providers: list[str] | None = None,
+    memory_active: bool = True,
+    voice_ready: bool = False,
+    research_ready: bool = True,
+    boss_verified: bool = True,
+) -> str:
+    """Build dynamic startup banner reflecting actual active system components."""
+    lines = [
+        "=====================",
+        "ARU AI v2 ONLINE",
+    ]
+    if telegram_connected:
+        lines.append("Telegram Connected")
+    else:
+        lines.append("Telegram Disconnected")
+
+    if connected_providers:
+        for prov_label in connected_providers:
+            lines.append(f"{prov_label} Connected")
+    else:
+        lines.append("AI System Offline")
+
+    if memory_active:
+        lines.append("Memory System Active")
+    if voice_ready:
+        lines.append("Voice Assistant Ready")
+    if research_ready:
+        lines.append("Research Agent Ready")
+    if boss_verified:
+        lines.append("Boss Verification Active")
+    lines.append("=====================")
+    return "\n" + "\n".join(lines) + "\n"
+
+
+BANNER = build_startup_banner(
+    telegram_connected=True,
+    connected_providers=["AI"],
+    memory_active=True,
+    voice_ready=True,
+    research_ready=True,
+    boss_verified=True,
+)
 
 
 class AruBot:
@@ -98,15 +170,49 @@ class AruBot:
         )
         self.ai = AruAI()
         self.memory = MemoryStore(activity=self.activity)
+        self.conversation_store = ConversationHistoryStore(db_path=self.memory.db_path)
+        self.memory_service = MemoryService(
+            memory_store=self.memory,
+            conversation_store=self.conversation_store,
+            activity=self.activity,
+        )
         self.anti_spam = AntiSpamManager(activity=self.activity)
         self.tasks = TaskManager(activity=self.activity)
         self.research = ResearchAgent(self.ai, activity=self.activity)
         self.voice = VoiceAssistant(self.ai, activity=self.activity)
         self.browser = BrowserAutomation()
+        self.pdf_processor = PDFProcessor(provider_manager=self.ai.provider_manager)
+
+        # Sprint 4: Unified Tool Registry & MCP Integration
+        self.tool_manager = ToolManager(activity=self.activity)
+        self.tool_manager.register_tool(BrowserTool(activity=self.activity))
+        self.tool_manager.register_tool(FileReaderTool(root_dir=ROOT_DIR, activity=self.activity))
+        self.tool_manager.register_tool(ResearchTool(research_service=self.research.service, activity=self.activity))
+        self.tool_manager.register_tool(MemoryTool(memory_service=self.memory_service, activity=self.activity))
+        self.tool_manager.register_tool(TaskTool(task_manager=self.tasks, activity=self.activity))
+
+        # Autonomous Agent (ReAct + Tool Calling)
+        self.agent = AruAgent(
+            ai=self.ai,
+            tool_manager=self.tool_manager,
+            activity=self.activity,
+            max_iterations=AGENT_MAX_ITERATIONS,
+        )
+
+        # Multi-Agent Autonomous Automation (Sprint 6)
         self.scheduler: AruScheduler | None = None
+        self.multi_agent_manager = MultiAgentManager(
+            ai=self.ai,
+            tool_manager=self.tool_manager,
+            scheduler=self.scheduler,
+            activity=self.activity,
+        )
+
         self._telegram_ok = False
-        self._groq_ok = False
+        self._ai_ok = False
+        self._provider_health: dict[str, bool] = {}
         self._voice_ok = False
+        self._groq_ok = False
 
     async def send_to_boss(self, text: str) -> None:
         """Send message to Boss (scheduled jobs, reports)."""
@@ -138,11 +244,13 @@ class AruBot:
             return False
 
         logger.info("Environment OK | Boss ID=%s", BOSS_TELEGRAM_ID)
-        self._groq_ok = self.ai.connect()
+        self._ai_ok = self.ai.connect()
+        self._groq_ok = "groq" in self.ai.provider_manager.get_enabled_providers()
         self._voice_ok = self.voice.connect()
         self.memory.list_all(limit=1)  # ensure DB loaded
+        wal_mode = ensure_db_ready(self.memory.db_path)
         self.activity.log("system", "startup", "Aru AI v2 initialized")
-        logger.info("SQLite ready at %s", self.memory.db_path)
+        logger.info("SQLite ready at %s (journal_mode=%s)", self.memory.db_path, wal_mode)
         logger.info("Logging active at %s", LOGS_DIR / "aru.log")
         return True
 
@@ -182,8 +290,10 @@ class AruBot:
 
             text = (event.raw_text or "").strip()
             is_voice = bool(event.message.voice or event.message.audio)
+            is_image = is_image_message(event.message)
+            is_pdf = is_pdf_message(event.message)
 
-            if not text and not is_voice:
+            if not text and not is_voice and not is_image and not is_pdf:
                 return
 
             sender = await event.get_sender()
@@ -206,6 +316,13 @@ class AruBot:
                     "/cooldown",
                     "/memory",
                     "/remind",
+                    "/tools",
+                    "/tool",
+                    "/mcp",
+                    "/agent",
+                    "/plan",
+                    "/workflow",
+                    "/workflows",
                 )
             )
 
@@ -262,6 +379,14 @@ class AruBot:
                 await self._handle_voice_message(event, event.chat_id)
                 return
 
+            if is_image:
+                await self._handle_image_message(event, event.chat_id, text)
+                return
+
+            if is_pdf:
+                await self._handle_pdf_message(event, event.chat_id, text)
+                return
+
             response = await self._process_boss_message(event, text, event.chat_id, sender_id)
             if response:
                 await event.reply(response)
@@ -301,7 +426,7 @@ class AruBot:
                 await event.reply("ভয়েস ফাইল ডাউনলোড করতে পারিনি।")
                 return
 
-            history = _chat_history[chat_id]
+            history = self.memory_service.get_conversation_context(chat_id)
             transcript, reply = await self.voice.process_voice_message(
                 audio_bytes,
                 memory=self.memory,
@@ -309,11 +434,11 @@ class AruBot:
             )
 
             if transcript:
-                history.append({"role": "user", "content": f"[Voice] {transcript}"})
-                history.append({"role": "assistant", "content": reply})
-                if len(history) > MAX_HISTORY:
-                    _chat_history[chat_id] = history[-MAX_HISTORY:]
-
+                self.memory_service.record_interaction(
+                    chat_id,
+                    user_message=f"[Voice] {transcript}",
+                    assistant_reply=reply,
+                )
                 response = f"🎤 **Transcript:** {transcript}\n\n{reply}"
             else:
                 response = reply
@@ -327,6 +452,74 @@ class AruBot:
             await event.reply(
                 "ভয়েস প্রসেস করতে সমস্যা হয়েছে। আবার চেষ্টা করুন বা টেক্সটে লিখুন।"
             )
+
+    async def _handle_image_message(
+        self,
+        event: events.NewMessage.Event,
+        chat_id: int,
+        prompt: str = "",
+    ) -> None:
+        """Download image, analyze with vision provider failover (Gemini Vision primary), and reply."""
+        try:
+            status_msg = await event.reply("🖼️ ছবিটি দেখা হচ্ছে, একটু অপেক্ষা করুন...")
+            reply = await process_image_message(
+                message=event.message,
+                user_prompt=prompt,
+                provider_manager=self.ai.provider_manager,
+            )
+            self.memory_service.record_interaction(
+                chat_id,
+                user_message=f"[Image: {prompt or 'ছবি বিশ্লেষণ'}]",
+                assistant_reply=reply,
+            )
+            try:
+                await status_msg.delete()
+            except Exception:
+                pass
+            await event.reply(reply)
+            logger.info("Image response sent | chat=%s reply_len=%s", chat_id, len(reply))
+        except Exception as exc:
+            logger.exception("Image handler error: %s", exc)
+            self.activity.log_error("vision", "handle", exc)
+            await event.reply("ছবিটি বিশ্লেষণ করতে সমস্যা হয়েছে। দয়া করে আবার চেষ্টা করুন।")
+
+    async def _handle_pdf_message(
+        self,
+        event: events.NewMessage.Event,
+        chat_id: int,
+        prompt: str = "",
+    ) -> None:
+        """Download PDF, chunk, progressively summarize across failover providers, and reply."""
+        try:
+            status_msg = await event.reply("📄 PDF ফাইল প্রসেস করা হচ্ছে, অনুগ্রহ করে অপেক্ষা করুন...")
+            pdf_bytes = await event.message.download_media(bytes)
+            if not pdf_bytes:
+                try:
+                    await status_msg.delete()
+                except Exception:
+                    pass
+                await event.reply("PDF ডাউনলোড করতে পারিনি। অনুগ্রহ করে আবার চেষ্টা করুন।")
+                return
+
+            user_query = prompt or "Summarize the key information and outline main points from this document."
+            summary = await self.pdf_processor.summarize_pdf(pdf_bytes, prompt=user_query)
+
+            self.memory_service.record_interaction(
+                chat_id,
+                user_message=f"[PDF: {user_query}]",
+                assistant_reply=summary,
+            )
+            try:
+                await status_msg.delete()
+            except Exception:
+                pass
+
+            await event.reply(summary)
+            logger.info("PDF response sent | chat=%s summary_len=%s", chat_id, len(summary))
+        except Exception as exc:
+            logger.exception("PDF handler error: %s", exc)
+            self.activity.log_error("pdf", "handle", exc)
+            await event.reply("PDF ফাইলটি প্রসেস করতে সমস্যা হয়েছে। দয়া করে আবার চেষ্টা করুন।")
 
     async def _process_boss_message(
         self,
@@ -344,11 +537,48 @@ class AruBot:
                 return "সিক্রেট কোড যাচাই সফল ✅"
             return "ভুল সিক্রেট কোড।"
 
+        if lower in ("/clearchat", "/clearhistory"):
+            cleared = self.memory_service.clear_conversation(chat_id)
+            return f"কথোপকথনের ইতিহাস মুছে ফেলা হয়েছে ({cleared}টি মেসেজ) 🗑️"
+
         research_result = await self.research.handle_command_async(
             text, memory=self.memory
         )
         if research_result is not None:
             return research_result
+
+        tools_result = await handle_tools_command(
+            text,
+            self.tool_manager,
+            ExecutionContext(user_id=sender_id, is_boss=True, caller="telegram"),
+        )
+        if tools_result is not None:
+            return tools_result
+
+        plan_result = await handle_plan_command(
+            text,
+            self.multi_agent_manager,
+            ExecutionContext(user_id=sender_id, is_boss=True, caller="telegram"),
+        )
+        if plan_result is not None:
+            return plan_result
+
+        workflow_result = await handle_workflow_command(
+            text,
+            self.multi_agent_manager,
+            ExecutionContext(user_id=sender_id, is_boss=True, caller="telegram"),
+        )
+        if workflow_result is not None:
+            return workflow_result
+
+        agent_result = await handle_agent_command(
+            text,
+            self.agent,
+            ExecutionContext(user_id=sender_id, is_boss=True, caller="telegram"),
+            manager=self.multi_agent_manager,
+        )
+        if agent_result is not None:
+            return agent_result
 
         for result in (
             handle_cooldown_command(text, self.anti_spam, sender_id),
@@ -365,24 +595,30 @@ class AruBot:
                 pending_tasks=self.tasks.pending_count(),
                 voice_ok=self._voice_ok,
                 activity_count=self.activity.count(),
+                tools_count=len(self.tool_manager.get_tool_names()),
+                multi_agents_count=len(self.multi_agent_manager._agents),
+                workflows_count=len(self.multi_agent_manager._workflows),
+                llm_status=(
+                    self.ai.provider_manager.format_status_summary()
+                    if hasattr(self.ai, "provider_manager") and self.ai.provider_manager
+                    else None
+                ),
             ),
         ):
             if result is not None:
                 return result
 
-        memory_ctx = self.memory.context_for_ai(text)
-        history = _chat_history[chat_id]
-        reply = await self.ai.generate(
+        memory_ctx = self.memory_service.build_context_for_prompt(text)
+        history = self.memory_service.get_conversation_context(chat_id)
+        agent_resp = await self.agent.run(
             text,
+            context=ExecutionContext(user_id=sender_id, is_boss=True, caller="telegram"),
             memory_context=memory_ctx,
             conversation_history=history,
         )
+        reply = agent_resp.reply
 
-        history.append({"role": "user", "content": text})
-        history.append({"role": "assistant", "content": reply})
-        if len(history) > MAX_HISTORY:
-            _chat_history[chat_id] = history[-MAX_HISTORY:]
-
+        self.memory_service.record_interaction(chat_id, user_message=text, assistant_reply=reply)
         return reply
 
     async def run(self) -> None:
@@ -398,10 +634,32 @@ class AruBot:
                 "   Enter your phone number and login code when prompted below.\n"
             )
 
-        if self._groq_ok:
-            self._groq_ok = await self.ai.health_check()
-            if self._groq_ok:
-                logger.info("Groq health check passed (model=%s)", self.ai.active_model)
+        self._provider_health = {}
+        if self._ai_ok:
+            enabled_providers = self.ai.provider_manager.get_enabled_providers()
+            logger.info("Verifying LLM provider connectivity (enabled: %s)...", ", ".join(enabled_providers) or "None")
+            display_names = {
+                "openrouter": "OpenRouter",
+                "openai": "OpenRouter",
+                "groq": "Groq",
+                "gemini": "Gemini",
+                "cloudflare": "Cloudflare",
+                "deepseek": "DeepSeek",
+            }
+            # health_check_all() only pings enabled providers, skips disabled ones
+            self._provider_health = await self.ai.provider_manager.health_check_all()
+            for p_name in enabled_providers:
+                p_label = display_names.get(p_name, p_name.capitalize())
+                is_healthy = self._provider_health.get(p_name, False)
+                p_obj = self.ai.provider_manager.get_provider(p_name)
+                active_model = getattr(p_obj, "active_model", getattr(p_obj, "default_model", ""))
+                if is_healthy:
+                    logger.info("%s health check passed (model=%s)", p_label, active_model)
+                else:
+                    logger.warning("%s health check failed or timed out", p_label)
+
+        # Update legacy _groq_ok flag based on actual Groq health check
+        self._groq_ok = self._provider_health.get("groq", False)
 
         logger.info("Starting Telegram client...")
         await self.client.connect()
@@ -434,8 +692,41 @@ class AruBot:
             self.memory,
         )
         self.scheduler.start()
+        self.multi_agent_manager.scheduler = self.scheduler
+        sched_agent = self.multi_agent_manager.get_agent("scheduler")
+        if sched_agent is not None:
+            sched_agent.scheduler = self.scheduler
 
-        print(BANNER)
+        display_names = {
+            "openrouter": "OpenRouter",
+            "openai": "OpenRouter",
+            "groq": "Groq",
+            "gemini": "Gemini",
+            "cloudflare": "Cloudflare",
+            "deepseek": "DeepSeek",
+        }
+        connected_providers: list[str] = []
+        for p_name in self.ai.provider_manager.priority:
+            if p_name in self.ai.provider_manager.get_enabled_providers():
+                if self._provider_health.get(p_name, False):
+                    label = display_names.get(p_name, p_name.capitalize())
+                    connected_providers.append(label)
+
+        # Fallback if health checks timed out but provider is enabled and AI connected
+        if not connected_providers and self._ai_ok:
+            for p_name in self.ai.provider_manager.get_enabled_providers():
+                label = display_names.get(p_name, p_name.capitalize())
+                connected_providers.append(label)
+
+        banner = build_startup_banner(
+            telegram_connected=self._telegram_ok,
+            connected_providers=connected_providers,
+            memory_active=True,
+            voice_ready=self._voice_ok,
+            research_ready=bool(self.research),
+            boss_verified=bool(BOSS_TELEGRAM_ID),
+        )
+        print(banner)
         logger.info("Aru AI v2 is online and listening")
 
         try:
@@ -446,6 +737,7 @@ class AruBot:
             await self.shutdown()
 
     async def shutdown(self) -> None:
+        self.multi_agent_manager.shutdown()
         if self.scheduler:
             self.scheduler.shutdown()
         await self.browser.stop()

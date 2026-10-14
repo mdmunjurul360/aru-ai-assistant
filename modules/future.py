@@ -30,7 +30,3 @@ class GitHubModule:
     async def list_prs(self, repo: str) -> list[dict]:
         raise NotImplementedError("GitHub assistant coming soon")
 
-
-class ResearchAgent:
-    async def research(self, query: str) -> str:
-        raise NotImplementedError("Research agent coming soon")
