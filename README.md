@@ -72,7 +72,6 @@ aru-ai/
 └── main.py               # Application entry point
 
 ```
-
 ## Installation
 
 ### 1. Prerequisites
